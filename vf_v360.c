@@ -45,7 +45,13 @@
 #include "video.h"
 #include "v360.h"
 #include "framesync.h"
+#include "internal.h"
+#include "libavutil/avstring.h"
+#include "libavutil/eval.h"
+#include "libavutil/mem.h"
 #include <float.h>
+
+static int process_frame(FFFrameSync *fs);
 
 typedef struct ThreadData {
     AVFrame *in;
@@ -259,7 +265,7 @@ static int query_formats(const AVFilterContext *ctx,
     };
 
     return ff_set_common_formats_from_list2(ctx, cfg_in, cfg_out,
-                                            s->alpha ? alpha_pix_fmts : pix_fmts);
+                                            (const int *)(s->alpha ? alpha_pix_fmts : pix_fmts));
 }
 
 #define DEFINE_REMAP1_LINE(bits, div)                                                    \
