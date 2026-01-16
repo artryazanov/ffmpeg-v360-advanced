@@ -1,0 +1,24 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Compilation artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Build directories
+build/
+bin/
+
+# FFmpeg specific (if any)
+ffmpeg
+ffprobe
+ffplay
