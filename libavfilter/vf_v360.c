@@ -57,6 +57,11 @@ typedef struct ThreadData {
     AVFrame *out;
 } ThreadData;
 
+typedef struct RigThreadData {
+    AVFrame **in_frames;
+    AVFrame *out_frame;
+} RigThreadData;
+
 #define OFFSET(x) offsetof(V360Context, x)
 #define FLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM
 #define TFLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_RUNTIME_PARAM
@@ -4306,6 +4311,46 @@ static int v360_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
     return 0;
 }
 
+static int process_frame(FFFrameSync *fs)
+{
+    AVFilterContext *ctx = fs->parent;
+    V360Context *s = ctx->priv;
+    AVFilterLink *outlink = ctx->outputs[0];
+    AVFrame *out = NULL;
+    int ret;
+    RigThreadData td = { 0 };
+
+    out = ff_get_video_buffer(outlink, outlink->w, outlink->h);
+    if (!out)
+        return AVERROR(ENOMEM);
+
+    td.in_frames = av_calloc(s->nb_inputs, sizeof(AVFrame*));
+    if (!td.in_frames) {
+        av_frame_free(&out);
+        return AVERROR(ENOMEM);
+    }
+
+    for (int i = 0; i < s->nb_inputs; i++) {
+        ret = ff_framesync_get_frame(&s->fs, i, &td.in_frames[i], 0);
+        if (ret < 0) {
+            av_frame_free(&out);
+            av_free(td.in_frames);
+            return ret;
+        }
+    }
+
+    if (td.in_frames[0]) {
+        av_frame_copy_props(out, td.in_frames[0]);
+    }
+
+    td.out_frame = out;
+
+    ff_filter_execute(ctx, s->remap_slice, &td, NULL, s->nb_threads);
+
+    av_free(td.in_frames);
+    return ff_filter_frame(outlink, out);
+}
+
 static int config_output(AVFilterLink *outlink)
 {
     AVFilterContext *ctx = outlink->src;
@@ -4411,7 +4456,7 @@ static int config_output(AVFilterLink *outlink)
     
         // Config Framesync
         s->fs.on_event = process_frame;
-        s->fs.time_base = outlink->time_base;
+        s->fs.time_base = ctx->inputs[0]->time_base;
         s->fs.opaque = s;
         if ((err = ff_framesync_configure(&s->fs)) < 0)
             return err;
@@ -4693,6 +4738,12 @@ static int config_output(AVFilterLink *outlink)
         s->in_transform = xyz_to_hequirect;
         err = 0;
         wf = w * 2.f;
+        hf = h;
+        break;
+    case TILES:
+        // Input preparation is handled in process_frame / framesync
+        err = 0;
+        wf = w;
         hf = h;
         break;
     case EQUISOLID:
@@ -5030,11 +5081,6 @@ static void reset_rot(V360Context *s)
     s->rot_quaternion[0][1] = s->rot_quaternion[0][2] = s->rot_quaternion[0][3] = 0.f;
 }
 
-typedef struct RigThreadData {
-    AVFrame **in_frames;
-    AVFrame *out_frame;
-} RigThreadData;
-
 static inline float get_weight(float d, float delta) {
     float t = av_clipf(d / delta, 0.0f, 1.0f);
     return t * t * (3.0f - 2.0f * t);
@@ -5366,6 +5412,7 @@ const FFFilter ff_vf_v360 = {
     .init          = init,
     .uninit        = uninit,
     .activate      = activate,
+    FILTER_INPUTS(NULL),
     FILTER_OUTPUTS(outputs),
     FILTER_QUERY_FUNC2(query_formats),
     .process_command = process_command,

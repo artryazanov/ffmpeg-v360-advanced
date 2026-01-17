@@ -44,7 +44,7 @@ The `V360Context` was extended to support:
 - `input_rot`: Pre-calculated rotation matrices for efficient rendering.
 
 ### 2. Initialization & Lifecycle (`libavfilter/vf_v360.c`)
-- **Dynamic Inputs**: The `init` function parses `cam_angles` and dynamically allocates input pads (`in0`, `in1`...) using `avfilter_insert_inpad`.
+- **Dynamic Inputs**: The `init` function parses `cam_angles` and dynamically allocates input pads (`in0`, `in1`...) using FFmpeg's pad append functions.
 - **FrameSync Integration**: The `activate` callback manages frame synchronization for the Rig mode, ensuring all inputs are locked before processing.
 - **Configuration**: `config_output` pre-calculates inverse rotation matrices ($R_{total}^{-1} = R_x^T \cdot R_y^T$) to minimize per-pixel math.
 
