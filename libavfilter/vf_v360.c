@@ -5470,7 +5470,7 @@ const FFFilter ff_vf_v360 = {
     .init          = init,
     .uninit        = uninit,
     .activate      = activate,
-    FILTER_INPUTS(NULL),
+    .p.inputs      = NULL,
     FILTER_OUTPUTS(outputs),
     FILTER_QUERY_FUNC2(query_formats),
     .process_command = process_command,
