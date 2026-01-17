@@ -4429,8 +4429,8 @@ static int config_output(AVFilterLink *outlink)
         s->remap_slice = depth <= 8 ? remap_rig_8bit_slice : remap_rig_16bit_slice;
 
         // TILES Output Configuration
-        outlink->w = s->w > 0 ? s->w : inlink->w;
-        outlink->h = s->h > 0 ? s->h : inlink->h;
+        outlink->w = s->width > 0 ? s->width : inlink->w;
+        outlink->h = s->height > 0 ? s->height : inlink->h;
         outlink->time_base = s->fs.time_base;
 
         s->max_value = (1 << depth) - 1;
@@ -5419,7 +5419,7 @@ const FFFilter ff_vf_v360 = {
     .init          = init,
     .uninit        = uninit,
     .activate      = activate,
-    FILTER_INPUTS(NULL),
+    .p.inputs      = NULL,
     FILTER_OUTPUTS(outputs),
     FILTER_QUERY_FUNC2(query_formats),
     .process_command = process_command,
