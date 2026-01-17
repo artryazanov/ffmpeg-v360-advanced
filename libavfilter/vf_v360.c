@@ -4426,6 +4426,15 @@ static int config_output(AVFilterLink *outlink)
             s->fs.time_base = AV_TIME_BASE_Q;
         s->fs.opaque = s;
 
+        // Configure each input as a sync source.
+        for (int i = 0; i < s->nb_inputs; i++) {
+            FFFrameSyncIn *in = &s->fs.in[i];
+            in->time_base = ctx->inputs[i]->time_base;
+            in->sync   = 1;
+            in->before = EXT_STOP;
+            in->after  = EXT_STOP;
+        }
+
         s->remap_slice = depth <= 8 ? remap_rig_8bit_slice : remap_rig_16bit_slice;
 
         // TILES Output Configuration
