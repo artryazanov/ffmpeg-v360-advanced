@@ -5299,9 +5299,17 @@ static int parse_rig_angles(AVFilterContext *ctx)
     if (!s->input_angles) return AVERROR(ENOMEM);
     
     s->input_rot = av_calloc(s->nb_inputs * 9, sizeof(float));
-    if (!s->input_rot) return AVERROR(ENOMEM);
+    if (!s->input_rot) {
+        av_freep(&s->input_angles);
+        return AVERROR(ENOMEM);
+    }
     
     p_copy = av_strdup(s->input_config_str);
+    if (!p_copy) {
+        av_freep(&s->input_angles);
+        av_freep(&s->input_rot);
+        return AVERROR(ENOMEM);
+    }
     ptr = NULL;
     i = 0;
     arg = av_strtok(p_copy, " ", &ptr);

@@ -4,7 +4,7 @@ This project implements the **"Rig Mode" (TILES)** in the FFmpeg `v360` filter, 
 
 ## Features
 
-- **Dynamic Multi-Input Architecture**: Supports any number of input video streams (cameras).
+- **Dynamic Multi-Input Architecture**: Supports any number of input video streams (cameras). All inputs must be in Rectilinear format.
 - **Geometric Calibration**: Per-input Pitch and Yaw configuration via the `cam_angles` option.
 - **Advanced Blending**: Weighted Inverse Projection using $C^2$-continuous Hermite interpolation (Smoothstep) for seam-free results.
 - **Synchronization**: Integrated `AVFrameSync` to ensure frame-accurate processing of multiple streams.
