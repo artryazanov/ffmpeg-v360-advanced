@@ -4427,6 +4427,22 @@ static int config_output(AVFilterLink *outlink)
 
         s->remap_slice = depth <= 8 ? remap_rig_8bit_slice : remap_rig_16bit_slice;
 
+        // TILES Output Configuration
+        outlink->w = s->w > 0 ? s->w : inlink->w;
+        outlink->h = s->h > 0 ? s->h : inlink->h;
+        outlink->time_base = s->fs.time_base;
+
+        s->max_value = (1 << depth) - 1;
+        s->nb_planes = av_pix_fmt_count_planes(outlink->format);
+        s->nb_threads = ff_filter_get_nb_threads(ctx);
+        s->in_width = inlink->w;
+        s->in_height = inlink->h;
+        s->width = outlink->w;
+        s->height = outlink->h;
+
+        set_dimensions(s->inplanewidth, s->inplaneheight, inlink->w, inlink->h, desc);
+        set_dimensions(s->planewidth, s->planeheight, outlink->w, outlink->h, desc);
+
         if ((err = ff_framesync_configure(&s->fs)) < 0)
             return err;
 
@@ -5358,13 +5374,6 @@ static av_cold void uninit(AVFilterContext *ctx)
     av_freep(&s->input_rot);
 }
 
-static const AVFilterPad inputs[] = {
-    {
-        .name         = "default",
-        .type         = AVMEDIA_TYPE_VIDEO,
-        .filter_frame = filter_frame,
-    },
-};
 
 static const AVFilterPad outputs[] = {
     {
