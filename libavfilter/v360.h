@@ -201,6 +201,7 @@ typedef struct V360Context {
     char *input_config_str;     // Raw string from user: "p0 y0 p1 y1..."
     float *input_angles;        // Parsed array: [pitch0, yaw0, pitch1, yaw1...]
     float *input_rot;           // Pre-calculated rotation matrices (9 floats per input)
+    AVFrame **in_frames;        // Pre-allocated array of input frame pointers
     float rig_fov;              // User-specified FOV (horizontal/vertical)
     float blend_width;          // Soft edge blending width (0.0 - 0.5)
 

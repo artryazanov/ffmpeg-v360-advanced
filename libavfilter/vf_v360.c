@@ -180,7 +180,7 @@ static const AVOption v360_options[] = {
     {"alpha_mask", "build mask in alpha plane",      OFFSET(alpha), AV_OPT_TYPE_BOOL,   {.i64=0},               0,                   1, FLAGS, .unit = "alpha"},
     { "reset_rot", "reset rotation",             OFFSET(reset_rot), AV_OPT_TYPE_BOOL,   {.i64=0},              -1,                   1,TFLAGS, .unit = "reset_rot"},
     { "cam_angles", "set list of input camera angles (pitch yaw...)", OFFSET(input_config_str), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, FLAGS },
-    { "rig_fov", "set field of view for rig inputs", OFFSET(rig_fov), AV_OPT_TYPE_FLOAT, {.dbl = 90.0}, 1.0, 360.0, FLAGS },
+    { "rig_fov", "set field of view for rig inputs", OFFSET(rig_fov), AV_OPT_TYPE_FLOAT, {.dbl = 90.0}, 1.0, 179.0, FLAGS },
     { "blend_width", "set blending overlap width (0.0-0.5)", OFFSET(blend_width), AV_OPT_TYPE_FLOAT, {.dbl = 0.05}, 0.0, 0.5, FLAGS },
     { "tiles", "tiled rig", 0, AV_OPT_TYPE_CONST, {.i64=TILES}, 0, 0, FLAGS, .unit = "in" },
     { NULL }
@@ -5194,8 +5194,7 @@ static int process_frame(FFFrameSync *fs)
     }
     out_frame->pts = av_rescale_q(s->fs.pts, s->fs.time_base, outlink->time_base);
 
-    rtd.in_frames = av_calloc(s->nb_inputs, sizeof(AVFrame*));
-    if (!rtd.in_frames) { av_frame_free(&out_frame); return AVERROR(ENOMEM); }
+    rtd.in_frames = s->in_frames;
     rtd.out_frame = out_frame;
 
     for (i = 0; i < s->nb_inputs; i++) {
@@ -5207,7 +5206,6 @@ static int process_frame(FFFrameSync *fs)
     else
         ff_filter_execute(ctx, remap_rig_8bit_slice, &rtd, NULL, FFMIN(s->height, s->nb_threads));
 
-    av_free(rtd.in_frames);
     return ff_filter_frame(outlink, out_frame);
 }
 
@@ -5332,18 +5330,27 @@ static av_cold int init(AVFilterContext *ctx)
     if (s->in == TILES) {
         if ((ret = parse_rig_angles(ctx)) < 0)
             return ret;
-            
+
+        s->in_frames = av_calloc(s->nb_inputs, sizeof(*s->in_frames));
+        if (!s->in_frames) {
+            ret = AVERROR(ENOMEM);
+            goto fail;
+        }
+
         for (int i = 0; i < s->nb_inputs; i++) {
             AVFilterPad pad = { 0 };
             pad.type = AVMEDIA_TYPE_VIDEO;
             pad.name = av_asprintf("in%d", i);
-            if (!pad.name) return AVERROR(ENOMEM);
+            if (!pad.name) {
+                ret = AVERROR(ENOMEM);
+                goto fail;
+            }
             ret = ff_append_inpad_free_name(ctx, &pad);
-            if (ret < 0) return ret;
+            if (ret < 0) goto fail;
         }
-        
+
         if ((ret = ff_framesync_init(&s->fs, ctx, s->nb_inputs)) < 0)
-            return ret;
+            goto fail;
     } else {
         AVFilterPad pad = { 0 };
         pad.type = AVMEDIA_TYPE_VIDEO;
@@ -5355,6 +5362,12 @@ static av_cold int init(AVFilterContext *ctx)
     }
 
     return 0;
+
+fail:
+    av_freep(&s->input_angles);
+    av_freep(&s->input_rot);
+    av_freep(&s->in_frames);
+    return ret;
 }
 
 static av_cold void uninit(AVFilterContext *ctx)
@@ -5380,6 +5393,7 @@ static av_cold void uninit(AVFilterContext *ctx)
 
     av_freep(&s->input_angles);
     av_freep(&s->input_rot);
+    av_freep(&s->in_frames);
 }
 
 

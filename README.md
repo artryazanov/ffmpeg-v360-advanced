@@ -32,7 +32,7 @@ ffmpeg \
 |--------|-------------|---------|-------|
 | `input=tiles` | Activates the Rig Mode. | - | - |
 | `cam_angles` | List of input camera angles in "Pitch Yaw" pairs (degrees). E.g., `'0 0 0 90'` for two cameras. | NULL | - |
-| `rig_fov` | Field of View for the input rig cameras (degrees). Assumes square renders. | 90.0 | 1.0 - 360.0 |
+| `rig_fov` | Field of View for the input rig cameras (degrees). Assumes square renders. | 90.0 | 1.0 - 179.0 |
 | `blend_width` | Width of the soft-edge blending region (normalized 0.0 - 0.5). Controls seam softness. | 0.05 | 0.0 - 0.5 |
 
 ## Technical Implementation
