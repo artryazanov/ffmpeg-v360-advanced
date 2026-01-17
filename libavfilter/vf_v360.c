@@ -4320,6 +4320,7 @@ static int config_output(AVFilterLink *outlink)
     AVFilterLink *inlink = ctx->inputs[0];
     V360Context *s = ctx->priv;
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(inlink->format);
+    s->desc = desc;
     const int depth = desc->comp[0].depth;
     const int sizeof_mask = s->mask_size = (depth + 7) >> 3;
     float default_h_fov = 360.f;
@@ -5163,8 +5164,12 @@ static int remap_rig_##bits##bit_slice(AVFilterContext *ctx, void *arg, int jobn
                 if (acc_w > 0) { \
                     WRITE_PIXEL_##bits(out, plane, i, j, acc_val / acc_w); \
                 } else { \
-                    if (plane > 0) WRITE_PIXEL_##bits(out, plane, i, j, 0.5f); \
-                    else WRITE_PIXEL_##bits(out, plane, i, j, 0.0f); \
+                    if (s->desc->flags & AV_PIX_FMT_FLAG_RGB) { \
+                        WRITE_PIXEL_##bits(out, plane, i, j, 0.0f); \
+                    } else { \
+                        if (plane > 0) WRITE_PIXEL_##bits(out, plane, i, j, 0.5f); \
+                        else WRITE_PIXEL_##bits(out, plane, i, j, 0.0f); \
+                    } \
                 } \
             } \
          } \

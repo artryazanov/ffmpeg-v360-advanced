@@ -176,6 +176,7 @@ typedef struct V360Context {
     int mask_size;
     int max_value;
     int nb_threads;
+    const struct AVPixFmtDescriptor *desc;
 
     SliceXYRemap *slice_remap;
     unsigned map[AV_VIDEO_MAX_PLANES];
