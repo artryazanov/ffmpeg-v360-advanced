@@ -18,6 +18,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#ifndef AVFILTER_V360_H
+#define AVFILTER_V360_H
+#include "avfilter.h"
 #include "framesync.h"
 
 enum StereoFormats {

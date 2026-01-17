@@ -45,7 +45,12 @@
 #include "video.h"
 #include "v360.h"
 #include "framesync.h"
+#include "libavutil/avstring.h"
+#include "libavutil/eval.h"
+#include "libavutil/mem.h"
 #include <float.h>
+
+static int process_frame(FFFrameSync *fs);
 
 typedef struct ThreadData {
     AVFrame *in;
@@ -259,7 +264,7 @@ static int query_formats(const AVFilterContext *ctx,
     };
 
     return ff_set_common_formats_from_list2(ctx, cfg_in, cfg_out,
-                                            s->alpha ? alpha_pix_fmts : pix_fmts);
+                                            (const int *)(s->alpha ? alpha_pix_fmts : pix_fmts));
 }
 
 #define DEFINE_REMAP1_LINE(bits, div)                                                    \
@@ -5292,8 +5297,7 @@ static av_cold int init(AVFilterContext *ctx)
             pad.type = AVMEDIA_TYPE_VIDEO;
             pad.name = av_asprintf("in%d", i);
             if (!pad.name) return AVERROR(ENOMEM);
-            ret = avfilter_insert_inpad(ctx, i, &pad);
-            av_free((void*)pad.name);
+            ret = ff_append_inpad_free_name(ctx, &pad);
             if (ret < 0) return ret;
         }
         
@@ -5305,8 +5309,7 @@ static av_cold int init(AVFilterContext *ctx)
         pad.name = av_strdup("default");
         if (!pad.name) return AVERROR(ENOMEM);
         pad.filter_frame = filter_frame;
-        ret = avfilter_insert_inpad(ctx, 0, &pad);
-        av_free((void*)pad.name);
+        ret = ff_append_inpad_free_name(ctx, &pad);
         if (ret < 0) return ret;
     }
 
