@@ -4311,45 +4311,8 @@ static int v360_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
     return 0;
 }
 
-static int process_frame(FFFrameSync *fs)
-{
-    AVFilterContext *ctx = fs->parent;
-    V360Context *s = ctx->priv;
-    AVFilterLink *outlink = ctx->outputs[0];
-    AVFrame *out = NULL;
-    int ret;
-    RigThreadData td = { 0 };
-
-    out = ff_get_video_buffer(outlink, outlink->w, outlink->h);
-    if (!out)
-        return AVERROR(ENOMEM);
-
-    td.in_frames = av_calloc(s->nb_inputs, sizeof(AVFrame*));
-    if (!td.in_frames) {
-        av_frame_free(&out);
-        return AVERROR(ENOMEM);
-    }
-
-    for (int i = 0; i < s->nb_inputs; i++) {
-        ret = ff_framesync_get_frame(&s->fs, i, &td.in_frames[i], 0);
-        if (ret < 0) {
-            av_frame_free(&out);
-            av_free(td.in_frames);
-            return ret;
-        }
-    }
-
-    if (td.in_frames[0]) {
-        av_frame_copy_props(out, td.in_frames[0]);
-    }
-
-    td.out_frame = out;
-
-    ff_filter_execute(ctx, s->remap_slice, &td, NULL, s->nb_threads);
-
-    av_free(td.in_frames);
-    return ff_filter_frame(outlink, out);
-}
+static int remap_rig_8bit_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
+static int remap_rig_16bit_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
 
 static int config_output(AVFilterLink *outlink)
 {
@@ -4456,10 +4419,18 @@ static int config_output(AVFilterLink *outlink)
     
         // Config Framesync
         s->fs.on_event = process_frame;
-        s->fs.time_base = ctx->inputs[0]->time_base;
+        if (ctx->inputs[0]->time_base.num > 0 && ctx->inputs[0]->time_base.den > 0)
+            s->fs.time_base = ctx->inputs[0]->time_base;
+        else
+            s->fs.time_base = AV_TIME_BASE_Q;
         s->fs.opaque = s;
+
+        s->remap_slice = depth <= 8 ? remap_rig_8bit_slice : remap_rig_16bit_slice;
+
         if ((err = ff_framesync_configure(&s->fs)) < 0)
             return err;
+
+        return 0;
     }
 
     s->max_value = (1 << depth) - 1;
