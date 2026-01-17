@@ -37,13 +37,13 @@ ffmpeg \
 
 ## Technical Implementation
 
-### 1. Data Structures (`v360.h`)
+### 1. Data Structures (`libavfilter/v360.h`)
 The `V360Context` was extended to support:
 - `nb_inputs`: Dynamic tracking of input count.
 - `fs`: `FFFrameSync` context for synchronizing multiple streams.
 - `input_rot`: Pre-calculated rotation matrices for efficient rendering.
 
-### 2. Initialization & Lifecycle (`vf_v360.c`)
+### 2. Initialization & Lifecycle (`libavfilter/vf_v360.c`)
 - **Dynamic Inputs**: The `init` function parses `cam_angles` and dynamically allocates input pads (`in0`, `in1`...) using `avfilter_insert_inpad`.
 - **FrameSync Integration**: The `activate` callback manages frame synchronization for the Rig mode, ensuring all inputs are locked before processing.
 - **Configuration**: `config_output` pre-calculates inverse rotation matrices ($R_{total}^{-1} = R_x^T \cdot R_y^T$) to minimize per-pixel math.
