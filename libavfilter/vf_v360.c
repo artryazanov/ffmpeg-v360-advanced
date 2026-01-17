@@ -4429,8 +4429,8 @@ static int config_output(AVFilterLink *outlink)
         s->remap_slice = depth <= 8 ? remap_rig_8bit_slice : remap_rig_16bit_slice;
 
         // TILES Output Configuration
-        outlink->w = s->w > 0 ? s->w : inlink->w;
-        outlink->h = s->h > 0 ? s->h : inlink->h;
+        outlink->w = s->width > 0 ? s->width : inlink->w;
+        outlink->h = s->height > 0 ? s->height : inlink->h;
         outlink->time_base = s->fs.time_base;
 
         s->max_value = (1 << depth) - 1;
@@ -4438,15 +4438,66 @@ static int config_output(AVFilterLink *outlink)
         s->nb_threads = ff_filter_get_nb_threads(ctx);
         s->in_width = inlink->w;
         s->in_height = inlink->h;
-        s->width = outlink->w;
-        s->height = outlink->h;
+        // s->width and s->height are set below, but are needed now for switch(s->out)
+        // If they are 0, take from outlink (as it was above)
+        int w = outlink->w;
+        int h = outlink->h;
+        
+        // --- IMPORTANT: Output Transform Initialization (Copied from the bottom of the function) ---
+        // Without this block s->out_transform remains NULL
+        float wf = w, hf = h;
+        int (*prepare_out)(AVFilterContext *ctx) = NULL;
+        
+        switch (s->out) {
+        case EQUIRECTANGULAR:
+            s->out_transform = equirect_to_xyz;
+            prepare_out = prepare_equirect_out;
+            break;
+        case CUBEMAP_3_2:
+            s->out_transform = cube3x2_to_xyz;
+            prepare_out = prepare_cube_out;
+            w = lrintf(wf / 4.f * 3.f);
+            break;
+        // ... (other cases can be added if planned, but the first one is sufficient for Equirectangular)
+        default:
+             // For safety, copy necessary cases or use Fallback
+            if (s->out == EQUIRECTANGULAR) {
+                 s->out_transform = equirect_to_xyz;
+                 prepare_out = prepare_equirect_out;
+            } else {
+                av_log(ctx, AV_LOG_ERROR, "Output format not fully supported in TILES mode implementation yet.\n");
+                return AVERROR(EINVAL);
+            }
+        }
+        
+        // Call to prepare_out is mandatory for flat_range (FOV) initialization
+        if (prepare_out) {
+            // Ensure FOV is set
+            if (s->h_fov == 0.f) s->h_fov = 360.f; // Default for Equirect
+            if (s->v_fov == 0.f) s->v_fov = 180.f;
+            
+            if ((err = prepare_out(ctx)) < 0) return err;
+        }
+        
+        // Calculate global rotation (Yaw/Pitch/Roll of the output itself)
+        // Copy call from the end of the function
+        calculate_rotation(s->yaw, s->pitch, s->roll, s->rot_quaternion, s->rotation_order);
+        set_mirror_modifier(s->h_flip, s->v_flip, s->d_flip, s->output_mirror_modifier);
+        // ---------------------------------------------------------------------------------
+
+        // Update dimensions if projection changed them
+        s->width = w;
+        s->height = h;
+        outlink->w = w;
+        outlink->h = h;
 
         set_dimensions(s->inplanewidth, s->inplaneheight, inlink->w, inlink->h, desc);
         set_dimensions(s->planewidth, s->planeheight, outlink->w, outlink->h, desc);
 
         if ((err = ff_framesync_configure(&s->fs)) < 0)
             return err;
-
+        
+        // Now it is safe to return, everything is initialized
         return 0;
     }
 
