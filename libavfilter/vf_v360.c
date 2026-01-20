@@ -5191,6 +5191,7 @@ static int remap_rig_##bits##bit_slice(AVFilterContext *ctx, void *arg, int jobn
                         float W = get_weight(D, s->blend_width); \
                         \
                         if (W > 0) { \
+                             float priority_W = powf(W, 3.0f); \
                              int in_w = s->inplanewidth[plane]; \
                              int in_h = s->inplaneheight[plane]; \
                              float tx = (u_prime + 1.0f) * 0.5f * in_w - 0.5f; \
@@ -5215,8 +5216,8 @@ static int remap_rig_##bits##bit_slice(AVFilterContext *ctx, void *arg, int jobn
                              float val11 = READ_PIXEL_##bits(in, plane, x1, y1); \
                              \
                              float val = val00 * wx0 * wy0 + val01 * wx1 * wy0 + val10 * wx0 * wy1 + val11 * wx1 * wy1; \
-                             acc_val += val * W; \
-                             acc_w += W; \
+                             acc_val += val * priority_W; \
+                             acc_w += priority_W; \
                         } \
                     } \
                 } \
