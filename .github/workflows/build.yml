@@ -1,0 +1,69 @@
+name: Build FFmpeg with Rig Mode
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          yasm \
+          nasm \
+          pkg-config \
+          libx264-dev \
+          libx265-dev \
+          libnuma-dev \
+          libvpx-dev \
+          libfdk-aac-dev \
+          libmp3lame-dev \
+          libopus-dev
+
+    - name: Clone FFmpeg
+      run: |
+        git clone --depth 1 --branch n6.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg_src
+
+    - name: Apply V360 Extension
+      run: |
+        # Method 1: Apply Patch
+        # cd ffmpeg_src
+        # git am ../patches/0001-Add-Rig-Mode-implementation.patch
+        
+        # Method 2: Direct File Copy (More robust for CI if patch drifts)
+        cp src/vf_v360.c ffmpeg_src/libavfilter/
+        cp src/v360.h ffmpeg_src/libavfilter/
+
+    - name: Configure FFmpeg
+      working-directory: ./ffmpeg_src
+      run: |
+        ./configure \
+          --disable-static \
+          --enable-shared \
+          --enable-gpl \
+          --enable-version3 \
+          --enable-libx264 \
+          --enable-filter=v360 \
+          --disable-doc \
+          --disable-programs \
+          --enable-ffmpeg
+
+    - name: Compile V360 Object
+      working-directory: ./ffmpeg_src
+      run: |
+        # Compile just the filter first to catch errors quickly
+        make libavfilter/vf_v360.o
+    
+    - name: Full Build (Optional check)
+      working-directory: ./ffmpeg_src
+      run: |
+        make -j$(nproc)

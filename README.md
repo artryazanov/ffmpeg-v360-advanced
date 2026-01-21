@@ -1,65 +1,98 @@
-# FFmpeg v360 Filter "Rig Mode" Implementation
+# FFmpeg v360 Filter - Advanced Rig Mode
 
-This project implements the **"Rig Mode" (TILES)** in the FFmpeg `v360` filter, enabling high-fidelity panoramic stitching from arbitrary multi-camera rigs. It transforms multiple directional square video inputs into a seamless panoramic output (e.g., Equirectangular), featuring dynamic input management and advanced geometric blending.
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Build Status](https://github.com/artryazanov/ffmpeg-v360-advanced/actions/workflows/build.yml/badge.svg)
+![FFmpeg Version](https://img.shields.io/badge/FFmpeg-6.1%2B-blue)
+
+An advanced extension of the standard FFmpeg `v360` filter, introducing **Rig Mode** for seamless stitching of multi-camera setups. This project provides a robust solution for transforming multiple directional video inputs into a cohesive 360° panoramic output with high-quality blending.
+
+## Visualization
+
+**From Input Rig to Equirectangular Panorama:**
+
+<img src="docs/geometry_diagram.png" alt="Architecture Diagram" width="800" />
+
+**Seamless Stitching Result:**
+
+![Example Result](docs/example_result.gif)
+
+*This video fragment was created by the [Source Engine Panorama Renderer](https://github.com/thegamerbay/source-panorama-renderer) project, which uses this advanced v360 implementation.*
+
+## Mathematical Model
+
+To ensure seamless stitching between camera views, we implement a **Weighted Inverse Projection** algorithm using **Hermite interpolation** with **Cubic Priority** for optimal ghosting reduction.
+
+The blending weight is calculated in two steps:
+
+1.  **Base Smoothness**: A base weight $W_{base}(t)$ is derived from the normalized distance $t$ to the edge of the field of view using Hermite interpolation:
+
+    $$W_{base}(t) = t^2 \cdot (3 - 2t)$$
+
+    Where $t \in [0, 1]$. This ensures $C^1$ continuity at the boundaries.
+
+2.  **Center Priority**: To prioritize the highest quality pixels from the center of the lens and suppress edge artifacts, the final weight $W$ is cubed:
+
+    $$W = (W_{base}(t))^3$$
+
+This non-linear priority weighting significantly improves the visual coherence of the stitched panorama.
 
 ## Features
 
-- **Dynamic Multi-Input Architecture**: Supports any number of input video streams (cameras). All inputs must be in Rectilinear format.
-- **Geometric Calibration**: Per-input Pitch and Yaw configuration via the `cam_angles` option.
-- **Advanced Blending**: Weighted Inverse Projection using $C^2$-continuous Hermite interpolation (Smoothstep) for seam-free results.
-- **Synchronization**: Integrated `AVFrameSync` to ensure frame-accurate processing of multiple streams.
-- **High Bit-Depth Support**: Full support for 8-bit and 16-bit processing pipelines.
+-   **Rig Mode (`input=tiles`)**: Accept an arbitrary number of inputs laid out in a grid (tiled) format.
+-   **Priority Blending**: Smart blending that prioritizes "stronger" central pixels over edge pixels to reduce ghosting.
+-   **High Fidelity**: Uses high-order interpolation methods for geometry remapping.
+-   **Configurable**: Full control over Field of View (FOV), Yaw, Pitch, Roll, and Blend Width.
 
-## Usage
+## Integration / Build Steps
 
-### Command Line Example
-To stitch a 4-camera rig (Front, Right, Back, Left) into an Equirectangular panorama:
+This repository is designed as an extension patch for FFmpeg.
+
+### Prerequisites
+-   Linux environment or WSL (Windows Subsystem for Linux)
+-   Dependencies: `build-essential`, `yasm`, `nasm`, `pkg-config`, `libx264-dev` (and other FFmpeg deps)
+
+### 1. Build using the helper script (Recommended)
+We provide a script to automate the cloning, patching, and building process.
 
 ```bash
-ffmpeg \
- -i cam0.mp4 -i cam1.mp4 -i cam2.mp4 -i cam3.mp4 \
- -filter_complex "
-    [0:v][1:v][2:v][3:v] v360=input=tiles:output=equirect:
-    cam_angles='0 0 0 90 0 180 0 270':
-    rig_fov=90:blend_width=0.05
- " \
- output_panorama.mp4
+./scripts/build_ffmpeg.sh
 ```
 
-### Options
+### 2. Manual Integration
+If you prefer to integrate manually into your own FFmpeg source tree:
 
-| Option | Description | Default | Range |
-|--------|-------------|---------|-------|
-| `input=tiles` | Activates the Rig Mode. | - | - |
-| `cam_angles` | List of input camera angles in "Pitch Yaw" pairs (degrees). E.g., `'0 0 0 90'` for two cameras. | NULL | - |
-| `rig_fov` | Field of View for the input rig cameras (degrees). Assumes square renders. | 90.0 | 1.0 - 179.0 |
-| `blend_width` | Width of the soft-edge blending region (normalized 0.0 - 0.5). Controls seam softness. | 0.05 | 0.0 - 0.5 |
+```bash
+# 1. Clone FFmpeg
+git clone https://github.com/FFmpeg/FFmpeg.git
+cd FFmpeg
+git checkout n6.1  # Recommended version
 
-## Technical Implementation
+# 2. Apply the patch
+# Assuming you are in the root of the FFmpeg repo and have this repo at ../ffmpeg-v360-advanced
+git am ../ffmpeg-v360-advanced/patches/0001-Add-Rig-Mode-implementation.patch
 
-### 1. Data Structures (`libavfilter/v360.h`)
-The `V360Context` was extended to support:
-- `nb_inputs`: Dynamic tracking of input count.
-- `fs`: `FFFrameSync` context for synchronizing multiple streams.
-- `input_rot`: Pre-calculated rotation matrices for efficient rendering.
+# OR copy files manually
+# cp ../ffmpeg-v360-advanced/src/vf_v360.c libavfilter/
+# cp ../ffmpeg-v360-advanced/src/v360.h libavfilter/
 
-### 2. Initialization & Lifecycle (`libavfilter/vf_v360.c`)
-- **Dynamic Inputs**: The `init` function parses `cam_angles` and dynamically allocates input pads (`in0`, `in1`...) using FFmpeg's pad append functions.
-- **FrameSync Integration**: The `activate` callback manages frame synchronization for the Rig mode, ensuring all inputs are locked before processing.
-- **Configuration**: `config_output` pre-calculates inverse rotation matrices ($R_{total}^{-1} = R_x^T \cdot R_y^T$) to minimize per-pixel math.
+# 3. Configure and Build
+./configure --enable-filter=v360 --enable-gpl --enable-libx264
+make -j$(nproc)
+```
 
-### 3. Rendering Core (`remap_rig`)
-The new rendering path bypasses fixed-function lookup tables to support dynamic 3D projection:
-1.  **Inverse Mapping**: Iterates over every output pixel.
-2.  **Global Vector**: Calculates the global 3D vector $\vec{V}_{global}$ for the output projection.
-3.  **Multi-Camera Sampling**:
-    -   Rotates $\vec{V}_{global}$ into each camera's local space.
-    -   Projects to the 2D image plane.
-    -   Computes blend weight using `smoothstep(distance)`.
-4.  **Accumulation**: A weighted average of all valid samples produces the final pixel color.
+## Usage Example
 
-## Blending Algorithm
-To ensure "wonderful" visual quality, the filter uses a **Weighted Inverse Projection** with **Hermite Interpolation**:
-- **Distance Calculation**: The distance $D$ of a pixel from the nearest edge of the input frame is calculated.
-- **Smoothstep Weighting**: $W = t^2 \cdot (3 - 2t)$, where $t$ is the normalized distance within the `blend_width`.
-- **Seamless Merge**: Weights are accumulated and normalized, ensuring smooth transitions even with vignetting or slight exposure differences.
+Once built, you can use the `v360` filter with the new `input=tiles` option.
+
+```bash
+ffmpeg -i input_rig_tiled.mp4 -vf "v360=input=tiles:output=e:h_fov=60:v_fov=60:...:blend_width=0.1" output_panorama.mp4
+```
+
+*See source code comments for full parameter list.*
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+Original `v360` filter Copyright (c) 2019 Eugene Lyapustin.
+Rig Mode implementation Copyright (c) 2026 Artem Ryazanov.

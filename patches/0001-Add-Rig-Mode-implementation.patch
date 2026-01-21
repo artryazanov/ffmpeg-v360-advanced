@@ -1,0 +1,641 @@
+diff --git a/libavfilter/v360.h b/libavfilter/v360.h
+index b3660c2..ab740aa 100644
+--- a/libavfilter/v360.h
++++ b/libavfilter/v360.h
+@@ -21,6 +21,7 @@
+ #ifndef AVFILTER_V360_H
+ #define AVFILTER_V360_H
+ #include "avfilter.h"
++#include "framesync.h"
+ 
+ enum StereoFormats {
+     STEREO_2D,
+@@ -55,6 +56,7 @@ enum Projections {
+     ORTHOGRAPHIC,
+     OCTAHEDRON,
+     CYLINDRICALEA,
++    TILES,
+     NB_PROJECTIONS,
+ };
+ 
+@@ -174,6 +176,7 @@ typedef struct V360Context {
+     int mask_size;
+     int max_value;
+     int nb_threads;
++    const struct AVPixFmtDescriptor *desc;
+ 
+     SliceXYRemap *slice_remap;
+     unsigned map[AV_VIDEO_MAX_PLANES];
+@@ -193,6 +196,17 @@ typedef struct V360Context {
+ 
+     void (*remap_line)(uint8_t *dst, int width, const uint8_t *const src, ptrdiff_t in_linesize,
+                        const int16_t *const u, const int16_t *const v, const int16_t *const ker);
++
++    // Rig Mode Extensions
++    int nb_inputs;              // Number of input streams
++    char *input_config_str;     // Raw string from user: "p0 y0 p1 y1..."
++    float *input_angles;        // Parsed array: [pitch0, yaw0, pitch1, yaw1...]
++    float *input_rot;           // Pre-calculated rotation matrices (9 floats per input)
++    AVFrame **in_frames;        // Pre-allocated array of input frame pointers
++    float rig_fov;              // User-specified FOV (horizontal/vertical)
++    float blend_width;          // Soft edge blending width (0.0 - 0.5)
++
++    FFFrameSync fs;             // Frame synchronization context
+ } V360Context;
+ 
+ void ff_v360_init(V360Context *s, int depth);
+diff --git a/libavfilter/vf_v360.c b/libavfilter/vf_v360.c
+index 1cfe408..3aed852 100644
+--- a/libavfilter/vf_v360.c
++++ b/libavfilter/vf_v360.c
+@@ -44,12 +44,24 @@
+ #include "formats.h"
+ #include "video.h"
+ #include "v360.h"
++#include "framesync.h"
++#include "libavutil/avstring.h"
++#include "libavutil/eval.h"
++#include "libavutil/mem.h"
++#include <float.h>
++
++static int process_frame(FFFrameSync *fs);
+ 
+ typedef struct ThreadData {
+     AVFrame *in;
+     AVFrame *out;
+ } ThreadData;
+ 
++typedef struct RigThreadData {
++    AVFrame **in_frames;
++    AVFrame *out_frame;
++} RigThreadData;
++
+ #define OFFSET(x) offsetof(V360Context, x)
+ #define FLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM
+ #define TFLAGS AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_RUNTIME_PARAM
+@@ -167,6 +179,10 @@ static const AVOption v360_options[] = {
+     {  "v_offset", "output vertical off-axis offset",  OFFSET(v_offset), AV_OPT_TYPE_FLOAT,{.dbl=0.f},       -1.f,                 1.f,TFLAGS, .unit = "v_offset"},
+     {"alpha_mask", "build mask in alpha plane",      OFFSET(alpha), AV_OPT_TYPE_BOOL,   {.i64=0},               0,                   1, FLAGS, .unit = "alpha"},
+     { "reset_rot", "reset rotation",             OFFSET(reset_rot), AV_OPT_TYPE_BOOL,   {.i64=0},              -1,                   1,TFLAGS, .unit = "reset_rot"},
++    { "cam_angles", "set list of input camera angles (pitch yaw...)", OFFSET(input_config_str), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, FLAGS },
++    { "rig_fov", "set field of view for rig inputs", OFFSET(rig_fov), AV_OPT_TYPE_FLOAT, {.dbl = 90.0}, 1.0, 179.0, FLAGS },
++    { "blend_width", "set blending overlap width (0.0-0.5)", OFFSET(blend_width), AV_OPT_TYPE_FLOAT, {.dbl = 0.05}, 0.0, 0.5, FLAGS },
++    { "tiles", "tiled rig", 0, AV_OPT_TYPE_CONST, {.i64=TILES}, 0, 0, FLAGS, .unit = "in" },
+     { NULL }
+ };
+ 
+@@ -253,7 +269,7 @@ static int query_formats(const AVFilterContext *ctx,
+     };
+ 
+     return ff_set_common_formats_from_list2(ctx, cfg_in, cfg_out,
+-                                            s->alpha ? alpha_pix_fmts : pix_fmts);
++                                            (const int *)(s->alpha ? alpha_pix_fmts : pix_fmts));
+ }
+ 
+ #define DEFINE_REMAP1_LINE(bits, div)                                                    \
+@@ -4295,12 +4311,16 @@ static int v360_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
+     return 0;
+ }
+ 
++static int remap_rig_8bit_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
++static int remap_rig_16bit_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs);
++
+ static int config_output(AVFilterLink *outlink)
+ {
+     AVFilterContext *ctx = outlink->src;
+     AVFilterLink *inlink = ctx->inputs[0];
+     V360Context *s = ctx->priv;
+     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(inlink->format);
++    s->desc = desc;
+     const int depth = desc->comp[0].depth;
+     const int sizeof_mask = s->mask_size = (depth + 7) >> 3;
+     float default_h_fov = 360.f;
+@@ -4317,6 +4337,179 @@ static int config_output(AVFilterLink *outlink)
+     int (*prepare_out)(AVFilterContext *ctx);
+     int have_alpha;
+ 
++    if (s->in == TILES) {
++        for (int i = 0; i < s->nb_inputs; i++) {
++            float pitch = s->input_angles[2 * i];
++            float yaw   = s->input_angles[2 * i + 1];
++            float r_pitch[3][3], r_yaw[3][3], r_total[3][3];
++            float *rot = &s->input_rot[i * 9];
++            
++            // R_y(yaw)
++            float cy = cosf(yaw * M_PI / 180.f);
++            float sy = sinf(yaw * M_PI / 180.f);
++            // Matrix:
++            // cy  0  sy
++            // 0   1  0
++            // -sy 0  cy
++            r_yaw[0][0] = cy;  r_yaw[0][1] = 0; r_yaw[0][2] = sy;
++            r_yaw[1][0] = 0;   r_yaw[1][1] = 1; r_yaw[1][2] = 0;
++            r_yaw[2][0] = -sy; r_yaw[2][1] = 0; r_yaw[2][2] = cy;
++            
++            // R_x(pitch)
++            float cp = cosf(pitch * M_PI / 180.f);
++            float sp = sinf(pitch * M_PI / 180.f);
++            // Matrix:
++            // 1  0   0
++            // 0  cp -sp
++            // 0  sp  cp
++            r_pitch[0][0] = 1; r_pitch[0][1] = 0;   r_pitch[0][2] = 0;
++            r_pitch[1][0] = 0; r_pitch[1][1] = cp;  r_pitch[1][2] = -sp;
++            r_pitch[2][0] = 0; r_pitch[2][1] = sp;  r_pitch[2][2] = cp;
++            
++            // R_total = R_y * R_x (Forward: Camera -> World is Ry * Rx)
++            // But usually R_total for viewing is R_x * R_y ??
++            // Spec says: "Combined rotation R_total = R_y(psi) * R_x(theta)" 
++            // "Inverse mapping... V_local = R_x(-theta) * R_y(-psi) * V_global"
++            // "Store the inverse (transpose) of R_total"
++            // Inverse of (Ry * Rx) is Rx^T * Ry^T.
++            // Let's compute Rx^T and Ry^T and multiply them.
++            
++            // Rx^T:
++            // 1  0   0
++            // 0  cp  sp
++            // 0  -sp cp
++            
++            // Ry^T:
++            // cy  0  -sy
++            // 0   1  0
++            // sy  0  cy
++            
++            // Result = Rx^T * Ry^T
++            // Row 0 of Result:
++            // (1,0,0) . col0(RyT) => cy
++            // (1,0,0) . col1(RyT) => 0
++            // (1,0,0) . col2(RyT) => -sy
++            
++            // Row 1:
++            // (0,cp,sp) . col0(RyT) => sp*sy
++            // (0,cp,sp) . col1(RyT) => cp
++            // (0,cp,sp) . col2(RyT) => sp*cy
++            // Wait, (0 * cy + cp * 0 + sp * sy) = sp * sy
++            
++            // Row 2:
++            // (0,-sp,cp) . col0(RyT) => cp*sy
++            // (0,-sp,cp) . col1(RyT) => -sp
++            // (0,-sp,cp) . col2(RyT) => cp*cy
++            
++            // Let's implement generic matrix multiply to be safe.
++            // Transpose locally.
++            float r_pitch_t[3][3];
++            float r_yaw_t[3][3];
++            
++            for(int r=0; r<3; r++) for(int c=0; c<3; c++) r_pitch_t[r][c] = r_pitch[c][r];
++            for(int r=0; r<3; r++) for(int c=0; c<3; c++) r_yaw_t[r][c] = r_yaw[c][r];
++            
++            // Multiply r_pitch_t * r_yaw_t
++            for(int r=0; r<3; r++) {
++               for(int c=0; c<3; c++) {
++                  rot[r*3 + c] = 0;
++                  for(int k=0; k<3; k++) rot[r*3 + c] += r_pitch_t[r][k] * r_yaw_t[k][c];
++               }
++            }
++        }
++    
++        // Config Framesync
++        s->fs.on_event = process_frame;
++        if (ctx->inputs[0]->time_base.num > 0 && ctx->inputs[0]->time_base.den > 0)
++            s->fs.time_base = ctx->inputs[0]->time_base;
++        else
++            s->fs.time_base = AV_TIME_BASE_Q;
++        s->fs.opaque = s;
++
++        // Configure each input as a sync source.
++        for (int i = 0; i < s->nb_inputs; i++) {
++            FFFrameSyncIn *in = &s->fs.in[i];
++            in->time_base = ctx->inputs[i]->time_base;
++            in->sync   = 1;
++            in->before = EXT_STOP;
++            in->after  = EXT_STOP;
++        }
++
++        s->remap_slice = depth <= 8 ? remap_rig_8bit_slice : remap_rig_16bit_slice;
++
++        // TILES Output Configuration
++        outlink->w = s->width > 0 ? s->width : inlink->w;
++        outlink->h = s->height > 0 ? s->height : inlink->h;
++        outlink->time_base = s->fs.time_base;
++
++        s->max_value = (1 << depth) - 1;
++        s->nb_planes = av_pix_fmt_count_planes(outlink->format);
++        s->nb_threads = ff_filter_get_nb_threads(ctx);
++        s->in_width = inlink->w;
++        s->in_height = inlink->h;
++        // s->width and s->height are set below, but are needed now for switch(s->out)
++        // If they are 0, take from outlink (as it was above)
++        int w = outlink->w;
++        int h = outlink->h;
++        
++        // --- IMPORTANT: Output Transform Initialization (Copied from the bottom of the function) ---
++        // Without this block s->out_transform remains NULL
++        float wf = w, hf = h;
++        int (*prepare_out)(AVFilterContext *ctx) = NULL;
++        
++        switch (s->out) {
++        case EQUIRECTANGULAR:
++            s->out_transform = equirect_to_xyz;
++            prepare_out = prepare_equirect_out;
++            break;
++        case CUBEMAP_3_2:
++            s->out_transform = cube3x2_to_xyz;
++            prepare_out = prepare_cube_out;
++            w = lrintf(wf / 4.f * 3.f);
++            break;
++        // ... (other cases can be added if planned, but the first one is sufficient for Equirectangular)
++        default:
++             // For safety, copy necessary cases or use Fallback
++            if (s->out == EQUIRECTANGULAR) {
++                 s->out_transform = equirect_to_xyz;
++                 prepare_out = prepare_equirect_out;
++            } else {
++                av_log(ctx, AV_LOG_ERROR, "Output format not fully supported in TILES mode implementation yet.\n");
++                return AVERROR(EINVAL);
++            }
++        }
++        
++        // Call to prepare_out is mandatory for flat_range (FOV) initialization
++        if (prepare_out) {
++            // Ensure FOV is set
++            if (s->h_fov == 0.f) s->h_fov = 360.f; // Default for Equirect
++            if (s->v_fov == 0.f) s->v_fov = 180.f;
++            
++            if ((err = prepare_out(ctx)) < 0) return err;
++        }
++        
++        // Calculate global rotation (Yaw/Pitch/Roll of the output itself)
++        // Copy call from the end of the function
++        calculate_rotation(s->yaw, s->pitch, s->roll, s->rot_quaternion, s->rotation_order);
++        set_mirror_modifier(s->h_flip, s->v_flip, s->d_flip, s->output_mirror_modifier);
++        // ---------------------------------------------------------------------------------
++
++        // Update dimensions if projection changed them
++        s->width = w;
++        s->height = h;
++        outlink->w = w;
++        outlink->h = h;
++
++        set_dimensions(s->inplanewidth, s->inplaneheight, inlink->w, inlink->h, desc);
++        set_dimensions(s->planewidth, s->planeheight, outlink->w, outlink->h, desc);
++
++        if ((err = ff_framesync_configure(&s->fs)) < 0)
++            return err;
++        
++        // Now it is safe to return, everything is initialized
++        return 0;
++    }
++
+     s->max_value = (1 << depth) - 1;
+ 
+     switch (s->interp) {
+@@ -4595,6 +4788,12 @@ static int config_output(AVFilterLink *outlink)
+         wf = w * 2.f;
+         hf = h;
+         break;
++    case TILES:
++        // Input preparation is handled in process_frame / framesync
++        err = 0;
++        wf = w;
++        hf = h;
++        break;
+     case EQUISOLID:
+         s->in_transform = xyz_to_equisolid;
+         err = prepare_equisolid_in(ctx);
+@@ -4930,6 +5129,186 @@ static void reset_rot(V360Context *s)
+     s->rot_quaternion[0][1] = s->rot_quaternion[0][2] = s->rot_quaternion[0][3] = 0.f;
+ }
+ 
++static inline float get_weight(float d, float delta) {
++    float t = av_clipf(d / delta, 0.0f, 1.0f);
++    return t * t * (3.0f - 2.0f * t);
++}
++
++#define READ_PIXEL_8(frame, plane, x, y) (frame->data[plane][(y) * frame->linesize[plane] + (x)] / (float)s->max_value)
++#define READ_PIXEL_16(frame, plane, x, y) (((uint16_t*)(frame->data[plane] + (y) * frame->linesize[plane]))[x] / (float)s->max_value)
++#define WRITE_PIXEL_8(frame, plane, x, y, val) (frame->data[plane][(y) * frame->linesize[plane] + (x)] = av_clip_uint8(lrintf((val) * s->max_value)))
++#define WRITE_PIXEL_16(frame, plane, x, y, val) (((uint16_t*)(frame->data[plane] + (y) * frame->linesize[plane]))[x] = av_clip_uint16(lrintf((val) * s->max_value)))
++
++#define DEFINE_REMAP_RIG(bits) \
++static int remap_rig_##bits##bit_slice(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs) \
++{ \
++    V360Context *s = ctx->priv; \
++    RigThreadData *td = arg; \
++    AVFrame *out = td->out_frame; \
++    int h = out->height; \
++    int slice_start = (h * jobnr) / nb_jobs; \
++    int slice_end = (h * (jobnr + 1)) / nb_jobs; \
++    int i, j, k, plane; \
++    float vec[3]; \
++    float vec_local[3]; \
++    float f = 1.0f / tanf(s->rig_fov * M_PI / 360.0f); \
++    \
++    for (plane = 0; plane < s->nb_planes; plane++) { \
++         int out_h_plane = s->planeheight[plane]; \
++         int out_w_plane = s->planewidth[plane]; \
++         int p_slice_start = (out_h_plane * jobnr) / nb_jobs; \
++         int p_slice_end   = (out_h_plane * (jobnr + 1)) / nb_jobs; \
++         \
++         for (j = p_slice_start; j < p_slice_end; j++) { \
++            for (i = 0; i < out_w_plane; i++) { \
++                s->out_transform(s, i, j, out_w_plane, out_h_plane, vec); \
++                offset_vector(vec, s->h_offset, s->v_offset); \
++                normalize_vector(vec); \
++                rotate(s->rot_quaternion, vec); \
++                normalize_vector(vec); \
++                mirror(s->output_mirror_modifier, vec); \
++                \
++                float acc_val = 0.0f; \
++                float acc_w = 0.0f; \
++                \
++                for (k = 0; k < s->nb_inputs; k++) { \
++                    AVFrame *in = td->in_frames[k]; \
++                    if (!in) continue; \
++                    float *rot = &s->input_rot[k * 9]; \
++                    vec_local[0] = rot[0] * vec[0] + rot[1] * vec[1] + rot[2] * vec[2]; \
++                    vec_local[1] = rot[3] * vec[0] + rot[4] * vec[1] + rot[5] * vec[2]; \
++                    vec_local[2] = rot[6] * vec[0] + rot[7] * vec[1] + rot[8] * vec[2]; \
++                    \
++                    if (vec_local[2] <= 0) continue; \
++                    \
++                    float u_prime = f * vec_local[0] / vec_local[2]; \
++                    float v_prime = f * vec_local[1] / vec_local[2]; \
++                    \
++                    if (fabsf(u_prime) < 1.0f && fabsf(v_prime) < 1.0f) { \
++                        float dx = 1.0f - fabsf(u_prime); \
++                        float dy = 1.0f - fabsf(v_prime); \
++                        float D = FFMIN(dx, dy); \
++                        float W = get_weight(D, s->blend_width); \
++                        \
++                        if (W > 0) { \
++                             float priority_W = powf(W, 3.0f); \
++                             int in_w = s->inplanewidth[plane]; \
++                             int in_h = s->inplaneheight[plane]; \
++                             float tx = (u_prime + 1.0f) * 0.5f * in_w - 0.5f; \
++                             float ty = (v_prime + 1.0f) * 0.5f * in_h - 0.5f; \
++                             int x0 = (int)floorf(tx); \
++                             int y0 = (int)floorf(ty); \
++                             int x1 = x0 + 1; \
++                             int y1 = y0 + 1; \
++                             float wx1 = tx - x0; \
++                             float wy1 = ty - y0; \
++                             float wx0 = 1.0f - wx1; \
++                             float wy0 = 1.0f - wy1; \
++                             \
++                             x0 = av_clip(x0, 0, in_w - 1); \
++                             x1 = av_clip(x1, 0, in_w - 1); \
++                             y0 = av_clip(y0, 0, in_h - 1); \
++                             y1 = av_clip(y1, 0, in_h - 1); \
++                             \
++                             float val00 = READ_PIXEL_##bits(in, plane, x0, y0); \
++                             float val01 = READ_PIXEL_##bits(in, plane, x1, y0); \
++                             float val10 = READ_PIXEL_##bits(in, plane, x0, y1); \
++                             float val11 = READ_PIXEL_##bits(in, plane, x1, y1); \
++                             \
++                             float val = val00 * wx0 * wy0 + val01 * wx1 * wy0 + val10 * wx0 * wy1 + val11 * wx1 * wy1; \
++                             acc_val += val * priority_W; \
++                             acc_w += priority_W; \
++                        } \
++                    } \
++                } \
++                \
++                if (acc_w > 0) { \
++                    WRITE_PIXEL_##bits(out, plane, i, j, acc_val / acc_w); \
++                } else { \
++                    if (s->desc->flags & AV_PIX_FMT_FLAG_RGB) { \
++                        WRITE_PIXEL_##bits(out, plane, i, j, 0.0f); \
++                    } else { \
++                        if (plane > 0) WRITE_PIXEL_##bits(out, plane, i, j, 0.5f); \
++                        else WRITE_PIXEL_##bits(out, plane, i, j, 0.0f); \
++                    } \
++                } \
++            } \
++         } \
++    } \
++    return 0; \
++}
++
++DEFINE_REMAP_RIG(8)
++DEFINE_REMAP_RIG(16)
++
++static int process_frame(FFFrameSync *fs)
++{
++    AVFilterContext *ctx = fs->parent;
++    V360Context *s = ctx->priv;
++    AVFilterLink *outlink = ctx->outputs[0];
++    AVFrame *out_frame;
++    int ret, i;
++    RigThreadData rtd;
++    AVFrame *in0 = NULL;
++
++    out_frame = ff_get_video_buffer(outlink, outlink->w, outlink->h);
++    if (!out_frame) return AVERROR(ENOMEM);
++
++    ff_framesync_get_frame(&s->fs, 0, &in0, 0);
++    if (in0) {
++        av_frame_copy_props(out_frame, in0);
++    }
++    out_frame->pts = av_rescale_q(s->fs.pts, s->fs.time_base, outlink->time_base);
++
++    rtd.in_frames = s->in_frames;
++    rtd.out_frame = out_frame;
++
++    for (i = 0; i < s->nb_inputs; i++) {
++        ff_framesync_get_frame(&s->fs, i, &rtd.in_frames[i], 0);
++    }
++
++    if (s->max_value > 255)
++        ff_filter_execute(ctx, remap_rig_16bit_slice, &rtd, NULL, FFMIN(s->height, s->nb_threads));
++    else
++        ff_filter_execute(ctx, remap_rig_8bit_slice, &rtd, NULL, FFMIN(s->height, s->nb_threads));
++
++    return ff_filter_frame(outlink, out_frame);
++}
++
++static int activate(AVFilterContext *ctx)
++{
++    V360Context *s = ctx->priv;
++    if (s->in == TILES) {
++        return ff_framesync_activate(&s->fs);
++    }
++    
++    // Legacy handling
++    AVFilterLink *inlink = ctx->inputs[0];
++    AVFilterLink *outlink = ctx->outputs[0];
++    AVFrame *in = NULL;
++    int status;
++    int64_t pts;
++    int ret;
++
++    FF_FILTER_FORWARD_STATUS_BACK(outlink, inlink);
++
++    ret = ff_inlink_consume_frame(inlink, &in);
++    if (ret < 0) return ret;
++    if (ret > 0) return filter_frame(inlink, in);
++
++    if (ff_inlink_acknowledge_status(inlink, &status, &pts)) {
++        ff_outlink_set_status(outlink, status, pts);
++        return 0;
++    }
++
++    if (ff_outlink_frame_wanted(outlink)) {
++        ff_inlink_request_frame(inlink);
++        return 0;
++    }
++
++    return FFERROR_NOT_READY;
++}
++
+ static int process_command(AVFilterContext *ctx, const char *cmd, const char *args,
+                            char *res, int res_len, int flags)
+ {
+@@ -4951,13 +5330,110 @@ static int process_command(AVFilterContext *ctx, const char *cmd, const char *ar
+     return config_output(ctx->outputs[0]);
+ }
+ 
++static int parse_rig_angles(AVFilterContext *ctx)
++{
++    V360Context *s = ctx->priv;
++    char *arg, *ptr = NULL;
++    int count = 0;
++    int i;
++    char *p_copy;
++
++    if (!s->input_config_str) {
++        av_log(ctx, AV_LOG_ERROR, "Camera angles must be specified for 'tiles' input format.\n");
++        return AVERROR(EINVAL);
++    }
++
++    p_copy = av_strdup(s->input_config_str);
++    if (!p_copy) return AVERROR(ENOMEM);
++    
++    arg = av_strtok(p_copy, " ", &ptr);
++    while (arg) {
++        count++;
++        arg = av_strtok(NULL, " ", &ptr);
++    }
++    av_free(p_copy);
++
++    if (count % 2 != 0 || count == 0) {
++        av_log(ctx, AV_LOG_ERROR, "Number of angles must be even (pitch yaw pairs) and positive.\n");
++        return AVERROR(EINVAL);
++    }
++
++    s->nb_inputs = count / 2;
++    s->input_angles = av_calloc(count, sizeof(float));
++    if (!s->input_angles) return AVERROR(ENOMEM);
++    
++    s->input_rot = av_calloc(s->nb_inputs * 9, sizeof(float));
++    if (!s->input_rot) {
++        av_freep(&s->input_angles);
++        return AVERROR(ENOMEM);
++    }
++    
++    p_copy = av_strdup(s->input_config_str);
++    if (!p_copy) {
++        av_freep(&s->input_angles);
++        av_freep(&s->input_rot);
++        return AVERROR(ENOMEM);
++    }
++    ptr = NULL;
++    i = 0;
++    arg = av_strtok(p_copy, " ", &ptr);
++    while (arg) {
++        s->input_angles[i++] = av_strtod(arg, NULL);
++        arg = av_strtok(NULL, " ", &ptr);
++    }
++    av_free(p_copy);
++    
++    return 0;
++}
++
+ static av_cold int init(AVFilterContext *ctx)
+ {
+     V360Context *s = ctx->priv;
++    int ret;
+ 
+     reset_rot(s);
+ 
++    if (s->in == TILES) {
++        if ((ret = parse_rig_angles(ctx)) < 0)
++            return ret;
++
++        s->in_frames = av_calloc(s->nb_inputs, sizeof(*s->in_frames));
++        if (!s->in_frames) {
++            ret = AVERROR(ENOMEM);
++            goto fail;
++        }
++
++        for (int i = 0; i < s->nb_inputs; i++) {
++            AVFilterPad pad = { 0 };
++            pad.type = AVMEDIA_TYPE_VIDEO;
++            pad.name = av_asprintf("in%d", i);
++            if (!pad.name) {
++                ret = AVERROR(ENOMEM);
++                goto fail;
++            }
++            ret = ff_append_inpad_free_name(ctx, &pad);
++            if (ret < 0) goto fail;
++        }
++
++        if ((ret = ff_framesync_init(&s->fs, ctx, s->nb_inputs)) < 0)
++            goto fail;
++    } else {
++        AVFilterPad pad = { 0 };
++        pad.type = AVMEDIA_TYPE_VIDEO;
++        pad.name = av_strdup("default");
++        if (!pad.name) return AVERROR(ENOMEM);
++        pad.filter_frame = filter_frame;
++        ret = ff_append_inpad_free_name(ctx, &pad);
++        if (ret < 0) return ret;
++    }
++
+     return 0;
++
++fail:
++    av_freep(&s->input_angles);
++    av_freep(&s->input_rot);
++    av_freep(&s->in_frames);
++    return ret;
+ }
+ 
+ static av_cold void uninit(AVFilterContext *ctx)
+@@ -4977,15 +5453,15 @@ static av_cold void uninit(AVFilterContext *ctx)
+     }
+ 
+     av_freep(&s->slice_remap);
++
++    if (s->in == TILES)
++         ff_framesync_uninit(&s->fs);
++
++    av_freep(&s->input_angles);
++    av_freep(&s->input_rot);
++    av_freep(&s->in_frames);
+ }
+ 
+-static const AVFilterPad inputs[] = {
+-    {
+-        .name         = "default",
+-        .type         = AVMEDIA_TYPE_VIDEO,
+-        .filter_frame = filter_frame,
+-    },
+-};
+ 
+ static const AVFilterPad outputs[] = {
+     {
+@@ -4999,11 +5475,12 @@ const FFFilter ff_vf_v360 = {
+     .p.name        = "v360",
+     .p.description = NULL_IF_CONFIG_SMALL("Convert 360 projection of video."),
+     .p.priv_class  = &v360_class,
+-    .p.flags       = AVFILTER_FLAG_SLICE_THREADS,
++    .p.flags       = AVFILTER_FLAG_SLICE_THREADS | AVFILTER_FLAG_DYNAMIC_INPUTS,
+     .priv_size     = sizeof(V360Context),
+     .init          = init,
+     .uninit        = uninit,
+-    FILTER_INPUTS(inputs),
++    .activate      = activate,
++    .p.inputs      = NULL,
+     FILTER_OUTPUTS(outputs),
+     FILTER_QUERY_FUNC2(query_formats),
+     .process_command = process_command,
