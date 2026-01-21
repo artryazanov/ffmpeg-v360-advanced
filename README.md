@@ -82,13 +82,24 @@ make -j$(nproc)
 
 ## Usage Example
 
-Once built, you can use the `v360` filter with the new `input=tiles` option.
+The `tiles` input mode is designed to stitch multiple synchronized input streams. You must use `-filter_complex` to map all input streams into the `v360` filter and specify the camera angles for each input.
+
+Assuming you have 4 inputs (Front, Right, Back, Left) with 90° FOV:
 
 ```bash
-ffmpeg -i input_rig_tiled.mp4 -vf "v360=input=tiles:output=e:h_fov=60:v_fov=60:...:blend_width=0.1" output_panorama.mp4
+ffmpeg \
+    -i front.mp4 -i right.mp4 -i back.mp4 -i left.mp4 \
+    -filter_complex \
+    "[0:v][1:v][2:v][3:v]v360=input=tiles:output=equirect:h_fov=360:v_fov=180: \
+    rig_fov=90:cam_angles='0 0 0 90 0 180 0 270': \
+    blend_width=0.1[outv]" \
+    -map "[outv]" output_panorama.mp4
 ```
 
-*See source code comments for full parameter list.*
+* **`input=tiles`**: Activates the multi-input Rig Mode.
+* **`rig_fov`**: Specifies the Field of View for individual input cameras.
+* **`cam_angles`**: A list of Pitch/Yaw pairs for each input (order matches the input stream order).
+* **`blend_width`**: Controls the edge blending area.
 
 ## License
 
