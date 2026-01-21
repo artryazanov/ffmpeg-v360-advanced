@@ -2,7 +2,7 @@
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Build Status](https://github.com/artryazanov/ffmpeg-v360-advanced/actions/workflows/build.yml/badge.svg)
-![FFmpeg Version](https://img.shields.io/badge/FFmpeg-6.1%2B-blue)
+![FFmpeg Version](https://img.shields.io/badge/FFmpeg-8.0.1%2B-blue)
 
 An advanced extension of the standard FFmpeg `v360` filter, introducing **Rig Mode** for seamless stitching of multi-camera setups. This project provides a robust solution for transforming multiple directional video inputs into a cohesive 360° panoramic output with high-quality blending.
 
@@ -65,7 +65,7 @@ If you prefer to integrate manually into your own FFmpeg source tree:
 # 1. Clone FFmpeg
 git clone https://github.com/FFmpeg/FFmpeg.git
 cd FFmpeg
-git checkout n6.1  # Recommended version
+git checkout n8.0.1  # Recommended version
 
 # 2. Apply the patch
 # Assuming you are in the root of the FFmpeg repo and have this repo at ../ffmpeg-v360-advanced

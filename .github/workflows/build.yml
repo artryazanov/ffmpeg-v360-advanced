@@ -31,7 +31,7 @@ jobs:
 
     - name: Clone FFmpeg
       run: |
-        git clone --depth 1 --branch n6.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg_src
+        git clone --depth 1 --branch n8.0.1 https://github.com/FFmpeg/FFmpeg.git ffmpeg_src
 
     - name: Apply V360 Extension
       run: |

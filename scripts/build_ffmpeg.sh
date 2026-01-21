@@ -3,7 +3,7 @@ set -e
 
 # Configuration
 FFMPEG_REPO="https://github.com/FFmpeg/FFmpeg.git"
-FFMPEG_TAG="n6.1"
+FFMPEG_TAG="n8.0.1"
 WORK_DIR="ffmpeg_build"
 PATCH_FILE="../patches/0001-Add-Rig-Mode-implementation.patch"
 
