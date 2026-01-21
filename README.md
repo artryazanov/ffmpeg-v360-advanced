@@ -6,7 +6,7 @@
 
 An advanced extension of the standard FFmpeg `v360` filter, introducing **Rig Mode** for seamless stitching of multi-camera setups. This project provides a robust solution for transforming multiple directional video inputs into a cohesive 360° panoramic output with high-quality blending.
 
-## Visualization
+## 🖼️ Visualization
 
 **From Input Rig to Equirectangular Panorama:**
 
@@ -18,7 +18,7 @@ An advanced extension of the standard FFmpeg `v360` filter, introducing **Rig Mo
 
 *This video fragment was created by the [Source Engine Panorama Renderer](https://github.com/thegamerbay/source-panorama-renderer) project, which uses this advanced v360 implementation.*
 
-## Mathematical Model
+## 📐 Mathematical Model
 
 To ensure seamless stitching between camera views, we implement a **Weighted Inverse Projection** algorithm using **Hermite interpolation** with **Cubic Priority** for optimal ghosting reduction.
 
@@ -36,14 +36,37 @@ The blending weight is calculated in two steps:
 
 This non-linear priority weighting significantly improves the visual coherence of the stitched panorama.
 
-## Features
+## ✨ Features
 
 -   **Rig Mode (`input=tiles`)**: Accept an arbitrary number of inputs laid out in a grid (tiled) format.
 -   **Priority Blending**: Smart blending that prioritizes "stronger" central pixels over edge pixels to reduce ghosting.
 -   **High Fidelity**: Uses high-order interpolation methods for geometry remapping.
 -   **Configurable**: Full control over Field of View (FOV), Yaw, Pitch, Roll, and Blend Width.
 
-## Integration / Build Steps
+## 📥 Windows Pre-built Binaries
+
+For users on Windows, we provide professional pre-compiled binaries via the [ffmpeg-msvc-prebuilt](https://github.com/artryazanov/ffmpeg-msvc-prebuilt) project. These builds are compiled with **MSVC (Microsoft Visual C++)** via GitHub Actions, ensuring native performance and stability.
+
+**[Download Latest Release (n8.0.1-v360-advanced-v1.3)](https://github.com/artryazanov/ffmpeg-msvc-prebuilt/releases/tag/n8.0.1-v360-advanced-v1.3)**
+
+### Build Features
+*   **Core:** Based on FFmpeg **n8.0.1** with the **Advanced v360 "Rig Mode"** modification included.
+*   **Compiler:** MSVC (Microsoft Visual C++).
+*   **Architectures:** Support for `amd64`, `x86`, `arm`, and `arm64`.
+*   **Variants:** Available as **Shared** (DLLs) and **Static** executables.
+*   **Licensing:**
+    *   **GPL:** Includes `x264` and `x265`.
+    *   **LGPL:** Free of GPL components.
+
+### Included Dependencies & Features
+The builds come pre-packaged with a robust set of libraries and capabilities:
+*   **Codecs:** `x264`, `x265` (GPL only), `libvpx`, `libwebp`, `libjxl`, `openexr`
+*   **Hardware Acceleration:** `nv-codec-headers`, `D3D12` encoders, `Vulkan` hwaccel
+*   **Capture:** `Windows.Graphics.Capture` support
+*   **Text & Subtitles:** `freetype`, `harfbuzz`, `libass`, `fribidi`
+*   **Others:** `SDL2`, `zlib`
+
+## 🛠️ Integration / Build Steps
 
 This repository is designed as an extension patch for FFmpeg.
 
@@ -80,7 +103,7 @@ git am ../ffmpeg-v360-advanced/patches/0001-Add-Rig-Mode-implementation.patch
 make -j$(nproc)
 ```
 
-## Usage Example
+## 💡 Usage Example
 
 The `tiles` input mode is designed to stitch multiple synchronized input streams. You must use `-filter_complex` to map all input streams into the `v360` filter and specify the camera angles for each input.
 
@@ -101,7 +124,7 @@ ffmpeg \
 * **`cam_angles`**: A list of Pitch/Yaw pairs for each input (order matches the input stream order).
 * **`blend_width`**: Controls the edge blending area.
 
-## License
+## ⚖️ License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
